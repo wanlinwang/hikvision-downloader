@@ -168,7 +168,7 @@ class CameraSdk:
 
     @classmethod
     def download_file(cls, auth_handler, cam_ip, file_uri, file_name):
-        request = ElementTree.fromstring(cls.__DOWNLOAD_REQUEST_XML)
+        request = DefusedElementTree.fromstring(cls.__DOWNLOAD_REQUEST_XML)
         playback_uri = request.find('playbackURI')
         playback_uri.text = file_uri
         request_data = ElementTree.tostring(request, encoding='utf8', method='xml')
@@ -216,7 +216,7 @@ class CameraSdk:
 
     @classmethod
     def get_tracks_info(cls, auth_handler, cam_ip, utc_time_interval, max_videos, track_id):
-        request = ElementTree.fromstring(cls.__SEARCH_MEDIA_XML)
+        request = DefusedElementTree.fromstring(cls.__SEARCH_MEDIA_XML)
 
         search_id = request.find('searchID')
         search_id.text = str(uuid.uuid1()).upper()
@@ -296,6 +296,6 @@ class CameraSdk:
     def __replace_subelement_body_with(parent, subelement_tag, new_body_text):
         subelement = parent.find(subelement_tag)
         subelement.clear()
-        inner_element = ElementTree.fromstring(new_body_text)
+        inner_element = DefusedElementTree.fromstring(new_body_text)
         subelement.append(inner_element)
         return parent

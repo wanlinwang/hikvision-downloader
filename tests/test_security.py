@@ -40,6 +40,8 @@ class TestSecurityUtils(unittest.TestCase):
         sanitized = sanitize_filename(malicious)
         self.assertNotIn('..', sanitized)
         self.assertNotIn('/', sanitized)
+        # Should extract just 'passwd' as the basename
+        self.assertEqual('passwd', sanitized)
 
     def test_sanitize_filename_removes_backslash(self):
         """Test that backslashes are removed (Windows path traversal)."""
@@ -59,6 +61,32 @@ class TestSecurityUtils(unittest.TestCase):
         valid_name = '2020-04-15_10_30_00'
         sanitized = sanitize_filename(valid_name)
         self.assertEqual(valid_name, sanitized)
+
+    def test_sanitize_filename_handles_url_encoded_slash(self):
+        """Test that URL-encoded path separators are handled."""
+        # %2F is URL-encoded forward slash
+        malicious = 'file%2F..%2F..%2Fetc%2Fpasswd'
+        sanitized = sanitize_filename(malicious)
+        self.assertNotIn('/', sanitized)
+        # After URL decoding and basename extraction, should get 'passwd'
+        self.assertEqual('passwd', sanitized)
+
+    def test_sanitize_filename_handles_url_encoded_backslash(self):
+        """Test that URL-encoded backslashes are handled."""
+        # %5C is URL-encoded backslash
+        malicious = 'file%5C..%5C..%5Cwindows%5Csystem32'
+        sanitized = sanitize_filename(malicious)
+        self.assertNotIn('\\', sanitized)
+
+    def test_sanitize_filename_empty_result_returns_default(self):
+        """Test that empty results after sanitization return a default value."""
+        # Edge case: just '..' becomes '_' after sanitization
+        result = sanitize_filename('..')
+        self.assertNotIn('..', result)
+        
+        # Edge case: just '.' returns 'unknown'
+        result = sanitize_filename('.')
+        self.assertEqual('unknown', result)
 
 
 if __name__ == '__main__':
