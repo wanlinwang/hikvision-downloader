@@ -1,8 +1,11 @@
 #!/usr/bin/python3
 
+import os
+
 # ====== Parameters ======
-user_name = 'admin'
-user_password = 'qwer1234'
+# Credentials should be provided via environment variables for security
+user_name = os.environ.get('HIK_USERNAME', '')
+user_password = os.environ.get('HIK_PASSWORD', '')
 # ====================================================================
 # write logs to log files (False/True)
 write_logs = True
@@ -98,8 +101,17 @@ def download_tracks(tracks, auth_handler, cam_ip, content_type):
 
 def download_file_with_retry(auth_handler, cam_ip, track, content_type):
     start_time_text = track.get_time_interval().to_local_time().to_filename_text()
-    file_name = get_path_to_video_archive(cam_ip) + '/' + start_time_text + '.' + content_type
+    # Sanitize the filename component to prevent path traversal
+    sanitized_time_text = sanitize_filename(start_time_text)
+    file_name = get_path_to_video_archive(cam_ip) + '/' + sanitized_time_text + '.' + content_type
     url_to_download = track.url_to_download()
+
+    # Validate the file path is within expected archive directory
+    base_archive_path = os.path.abspath(path_to_media_archive)
+    if not validate_path(file_name, base_archive_path):
+        logger = Logger.get_logger()
+        logger.error('Invalid file path detected, possible path traversal attack: {}'.format(file_name))
+        return False
 
     create_directory_for(file_name)
 
@@ -175,6 +187,10 @@ def parse_parameters():
 Examples:
   %(prog)s 10.145.17.202 2020-04-15 00:30:00 2020-04-15 10:59:59
   %(prog)s -u 10.145.17.202 2020-04-15 00:30:00 2020-04-15 10:59:59
+
+Environment Variables:
+  HIK_USERNAME: Camera username (required)
+  HIK_PASSWORD: Camera password (required)
         """
 
     parser = argparse.ArgumentParser(usage=usage, epilog=epilog, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -198,6 +214,13 @@ def main():
     parameters = parse_parameters()
     if parameters:
         try:
+            # Validate credentials are provided
+            if not user_name or not user_password:
+                print("Error: Camera credentials not provided.")
+                print("Please set HIK_USERNAME and HIK_PASSWORD environment variables.")
+                print("Example: export HIK_USERNAME='admin' && export HIK_PASSWORD='yourpassword'")
+                return
+
             camera_ip = parameters.IP
             init(camera_ip)
 
