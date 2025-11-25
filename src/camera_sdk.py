@@ -5,6 +5,7 @@ import uuid
 
 import requests
 import shutil
+import defusedxml.ElementTree as DefusedElementTree
 
 from requests.auth import HTTPBasicAuth
 from requests.auth import HTTPDigestAuth
@@ -96,7 +97,7 @@ class CameraSdk:
     @classmethod
     def get_error_message_from(cls, answer):
         answer_text = cls.__clear_xml_from_namespaces(answer.text)
-        answer_xml = ElementTree.fromstring(answer_text)
+        answer_xml = DefusedElementTree.fromstring(answer_text)
 
         answer_status_element = answer_xml.find('statusString')
         answer_substatus_element = answer_xml.find('subStatusCode')
@@ -135,7 +136,7 @@ class CameraSdk:
         answer = cls.__make_get_request(auth_handler, cam_ip, cls.__TIME_URL)
         if answer:
             time_info_text = cls.__clear_xml_from_namespaces(answer.text)
-            time_info_xml = ElementTree.fromstring(time_info_text)
+            time_info_xml = DefusedElementTree.fromstring(time_info_text)
             timezone_raw = time_info_xml.find('timeZone')
             time_offset = cls.parse_timezone(timezone_raw.text)
             return time_offset
@@ -252,7 +253,7 @@ class CameraSdk:
     @classmethod
     def create_tracks_from_info(cls, answer, local_time_offset):
         answer_text = cls.__clear_xml_from_namespaces(answer.text)
-        answer_xml = ElementTree.fromstring(answer_text)
+        answer_xml = DefusedElementTree.fromstring(answer_text)
 
         match_list = answer_xml.find('matchList')
         match_items = match_list.findall('searchMatchItem')
