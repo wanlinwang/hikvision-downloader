@@ -105,35 +105,81 @@ optional arguments:
 
 ## 文件组织结构
 
-下载的文件会按照NVR IP和通道号组织：
+### 自动命名（推荐）
+
+脚本会自动从NVR获取摄像头名称，并使用名称作为文件夹名：
 
 ```
 media/
 ├── 10.19.2.2/
-│   ├── channel_01/
+│   ├── 监控04_jiankong/          # 自动从NVR获取的名称
 │   │   ├── 2024-11-25_08-00-00.mp4
 │   │   ├── 2024-11-25_08-10-00.mp4
 │   │   └── ...
-│   ├── channel_02/
+│   ├── 监控08_jiankong/          # 自动从NVR获取的名称
 │   │   ├── 2024-11-25_08-00-00.mp4
 │   │   └── ...
-│   ├── channel_04/     # "监控04_jiankong"
+│   ├── 大门入口/                 # 自定义名称
 │   │   └── ...
-│   ├── channel_08/     # "监控08_jiankong"
+│   ├── channel_02/               # 如果NVR没有设置名称，使用通道号
 │   │   └── ...
-│   └── ...
+│   └── channel_mapping.json     # 通道名称映射文件
 ```
+
+### 持久化映射
+
+首次运行时，脚本会：
+1. 尝试从NVR获取每个通道的名称
+2. 将通道号和名称的映射关系保存到 `channel_mapping.json`
+3. 以后每次运行都会使用相同的文件夹名称
+
+这样**无论运行多少次，同一个摄像头的视频永远保存在同一个文件夹中**！
 
 ## 日志文件
 
-每个通道会生成独立的日志文件：
+每个通道会生成独立的日志文件，使用摄像头名称：
 
 ```
 media/
-├── 10.19.2.2_main.log           # 主日志
-├── 10.19.2.2_channel_01.log     # 通道1日志
-├── 10.19.2.2_channel_02.log     # 通道2日志
+├── 10.19.2.2_main.log              # 主日志
+├── 10.19.2.2_监控04_jiankong.log   # 通道4日志（使用摄像头名称）
+├── 10.19.2.2_监控08_jiankong.log   # 通道8日志（使用摄像头名称）
+├── 10.19.2.2_channel_02.log        # 通道2日志（未设置名称）
 └── ...
+```
+
+## 通道名称管理
+
+### 自动获取名称
+
+脚本会尝试从NVR自动获取每个通道的名称（通过ISAPI接口），并保存到 `channel_mapping.json` 文件。
+
+### 手动编辑名称
+
+您可以手动编辑 `media/10.19.2.2/channel_mapping.json` 文件来自定义通道名称：
+
+```json
+{
+  "1": "大门入口",
+  "2": "停车场",
+  "3": "前台大厅",
+  "4": "监控04_jiankong",
+  "8": "监控08_jiankong"
+}
+```
+
+**重要**：
+- 修改名称后，脚本会将新视频保存到新的文件夹
+- 旧文件夹中的视频不会自动移动
+- 建议在首次运行后立即编辑此文件，确定好名称
+
+### 查看通道映射
+
+每次下载完成后，会显示映射文件的位置：
+
+```
+Channel name mapping saved to: media/10.19.2.2/channel_mapping.json
+You can edit this file to customize channel names.
 ```
 
 ## 示例输出
@@ -143,10 +189,10 @@ Connecting to NVR 10.19.2.2...
 
 Scanning NVR 10.19.2.2 for available channels...
 (This may take a moment, checking channels 1-32)
-  ✓ Channel 01 has recordings
+  ✓ Channel 01 (大门入口) has recordings
   ✓ Channel 02 has recordings
-  ✓ Channel 04 has recordings
-  ✓ Channel 08 has recordings
+  ✓ Channel 04 (监控04_jiankong) has recordings
+  ✓ Channel 08 (监控08_jiankong) has recordings
 
 Found 4 channel(s) with recordings: [1, 2, 4, 8]
 
@@ -155,14 +201,14 @@ Time range: 2024-11-25 08:00:00 to 2024-11-25 18:00:00
 Content type: Videos
 Max concurrent downloads: 3
 
-Starting download from channel 01...
+Starting download from channel 01 (大门入口)...
 Starting download from channel 02...
-Starting download from channel 04...
-✓ Channel 01: Successfully downloaded 15 files
-Starting download from channel 08...
+Starting download from channel 04 (监控04_jiankong)...
+✓ Channel 01 (大门入口): Successfully downloaded 15 files
+Starting download from channel 08 (监控08_jiankong)...
 ✓ Channel 02: Successfully downloaded 12 files
-✓ Channel 04: Successfully downloaded 18 files
-✓ Channel 08: Successfully downloaded 20 files
+✓ Channel 04 (监控04_jiankong): Successfully downloaded 18 files
+✓ Channel 08 (监控08_jiankong): Successfully downloaded 20 files
 
 ======================================================================
 DOWNLOAD SUMMARY FOR NVR: 10.19.2.2
@@ -174,16 +220,43 @@ Failed: 0
 Total files downloaded: 65
 
 ✓ Successful channels:
-  - Channel 01: 15 files
+  - Channel 01 (大门入口): 15 files
   - Channel 02: 12 files
-  - Channel 04: 18 files
-  - Channel 08: 20 files
+  - Channel 04 (监控04_jiankong): 18 files
+  - Channel 08 (监控08_jiankong): 20 files
 ======================================================================
+
+Channel name mapping saved to: media/10.19.2.2/channel_mapping.json
+You can edit this file to customize channel names.
 ```
 
 ## 常见问题
 
-### 1. 如何确定摄像头对应的通道号？
+### 1. 如何确保摄像头与文件夹对应正确？
+
+**脚本已经自动解决这个问题！** 工作原理：
+
+1. **首次运行**：
+   - 脚本自动从NVR获取每个通道的名称（如"监控04_jiankong"）
+   - 将通道号→名称的映射保存到 `channel_mapping.json`
+   - 使用名称作为文件夹名
+
+2. **后续运行**：
+   - 自动读取 `channel_mapping.json`
+   - 使用相同的文件夹名称
+   - **保证同一摄像头永远保存在同一文件夹**
+
+3. **自定义名称**：
+   编辑 `media/10.19.2.2/channel_mapping.json`：
+   ```json
+   {
+     "1": "大门入口",
+     "4": "监控04_jiankong",
+     "8": "监控08_jiankong"
+   }
+   ```
+
+### 2. 如何确定摄像头对应的通道号？
 
 从您的截图中可以看到摄像头别名（如"监控04_jiankong"、"监控08_jiankong"），数字部分通常对应通道号。您可以：
 
@@ -191,17 +264,14 @@ Total files downloaded: 65
    ```powershell
    python media_download_all_channels.py 10.19.2.2 2024-11-25 08:00:00 2024-11-25 09:00:00
    ```
-   脚本会显示所有有录像的通道
+   脚本会自动显示所有通道的名称
 
-2. **通过NVR的Web界面查看**：登录NVR管理界面，查看通道配置
+2. **查看映射文件**：
+   首次运行后，查看 `media/10.19.2.2/channel_mapping.json`
 
-3. **逐个测试**：
-   ```powershell
-   # 测试通道1
-   python media_download_all_channels.py --channels 1 10.19.2.2 2024-11-25 08:00:00 2024-11-25 08:10:00
-   ```
+3. **通过NVR的Web界面查看**：登录NVR管理界面，查看通道配置
 
-### 2. 自动检测很慢怎么办？
+### 3. 自动检测很慢怎么办？
 
 如果您知道NVR只有少量通道（例如8通道），可以减少扫描范围：
 
@@ -215,7 +285,7 @@ python media_download_all_channels.py -m 8 10.19.2.2 2024-11-25 08:00:00 2024-11
 python media_download_all_channels.py --channels 1-8 10.19.2.2 2024-11-25 08:00:00 2024-11-25 18:00:00
 ```
 
-### 3. 可以加快下载速度吗？
+### 4. 可以加快下载速度吗？
 
 可以增加并发数，但要注意：
 - 网络带宽限制
@@ -228,11 +298,11 @@ python media_download_all_channels.py --channels 1-8 10.19.2.2 2024-11-25 08:00:
 python media_download_all_channels.py -c 5 10.19.2.2 2024-11-25 08:00:00 2024-11-25 18:00:00
 ```
 
-### 4. 支持不同的NVR品牌吗？
+### 5. 支持不同的NVR品牌吗？
 
 此脚本专门为海康威视（Hikvision）和海康威视（Hiwatch）设备设计，使用ISAPI接口。其他品牌的NVR可能不兼容。
 
-### 5. 下载中断后可以继续吗？
+### 6. 下载中断后可以继续吗？
 
 目前脚本会跳过已存在的文件。如果中断，重新运行相同的命令即可继续下载未完成的部分。
 
@@ -321,6 +391,15 @@ $env:HIK_PASSWORD = 'your_password'
 1. 检查该通道的独立日志文件
 2. 该通道可能在指定时间段没有录像
 3. 可能是网络临时问题，可以重新运行脚本
+
+### 修改通道名称后，旧视频找不到了
+
+如果您修改了 `channel_mapping.json` 中的名称：
+- 新下载的视频会保存到新名称的文件夹
+- 旧视频仍在原文件夹中
+- 需要手动移动或重命名文件夹
+
+**建议**：在首次运行后立即确定好通道名称，避免后续修改
 
 ## 高级用法
 

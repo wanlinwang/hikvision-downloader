@@ -9,6 +9,7 @@ import os
 import sys
 import argparse
 import threading
+import json
 from datetime import timedelta
 from queue import Queue
 
@@ -39,20 +40,87 @@ from src.track import Track
 # ====== Multi-channel Parameters ======
 MAX_CONCURRENT_DOWNLOADS = 3  # Maximum number of channels to download from simultaneously
 MAX_CHANNEL_TO_SCAN = 32  # Maximum channel number to scan (most NVRs have 4, 8, 16, or 32 channels)
+CHANNEL_MAPPING_FILE = 'channel_mapping.json'  # File to store channel name mappings
 # ======================================
 
 
-def get_path_to_video_archive(nvr_ip: str, channel_num: int = None):
+def get_path_to_video_archive(nvr_ip: str, channel_num: int = None, channel_name: str = None):
     """Get the path for video archive, optionally including channel subdirectory."""
     base_path = path_to_media_archive + nvr_ip
     if channel_num is not None:
-        return base_path + f'/channel_{channel_num:02d}/'
+        if channel_name:
+            # Use sanitized channel name as folder name
+            safe_name = sanitize_filename(channel_name)
+            return base_path + f'/{safe_name}/'
+        else:
+            return base_path + f'/channel_{channel_num:02d}/'
     return base_path + '/'
+
+
+def load_channel_mapping(nvr_ip):
+    """
+    Load channel name mapping from JSON file.
+    Returns a dictionary mapping channel numbers to names.
+    """
+    mapping_file = path_to_media_archive + nvr_ip + '/' + CHANNEL_MAPPING_FILE
+    
+    if os.path.exists(mapping_file):
+        try:
+            with open(mapping_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not load channel mapping: {e}")
+            return {}
+    return {}
+
+
+def save_channel_mapping(nvr_ip, mapping):
+    """
+    Save channel name mapping to JSON file.
+    """
+    mapping_file = path_to_media_archive + nvr_ip + '/' + CHANNEL_MAPPING_FILE
+    
+    try:
+        create_directory_for(mapping_file)
+        with open(mapping_file, 'w', encoding='utf-8') as f:
+            json.dump(mapping, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not save channel mapping: {e}")
+
+
+def get_channel_name_from_nvr(auth_handler, nvr_ip, channel_num):
+    """
+    Try to get the channel name from NVR via ISAPI.
+    Returns the channel name or None if not available.
+    """
+    try:
+        # Try to get channel info from NVR
+        # ISAPI endpoint: /ISAPI/System/Video/inputs/channels/{channel_num}
+        url = f'http://{nvr_ip}/ISAPI/System/Video/inputs/channels/{channel_num}'
+        response = CameraSdk._CameraSdk__make_get_request(auth_handler, nvr_ip, f'/ISAPI/System/Video/inputs/channels/{channel_num}')
+        
+        if response and response.ok:
+            # Parse XML response to get channel name
+            import defusedxml.ElementTree as DefusedElementTree
+            import re
+            
+            xml_text = re.sub(' xmlns="[^"]+"', '', response.text, count=0)
+            xml_root = DefusedElementTree.fromstring(xml_text)
+            
+            # Try to find channel name
+            name_element = xml_root.find('.//name')
+            if name_element is not None and name_element.text:
+                return name_element.text.strip()
+    except Exception as e:
+        pass
+    
+    return None
 
 
 def get_available_channels(auth_handler, nvr_ip, utc_time_interval, content_type, max_channel=MAX_CHANNEL_TO_SCAN):
     """
     Scan NVR to find all channels that have recorded media.
+    Also retrieves and caches channel names from the NVR.
     
     Args:
         auth_handler: Authentication handler
@@ -62,12 +130,16 @@ def get_available_channels(auth_handler, nvr_ip, utc_time_interval, content_type
         max_channel: Maximum channel number to scan
     
     Returns:
-        List of channel numbers that have recordings
+        Tuple: (list of channel numbers, dict of channel names)
     """
     available_channels = []
+    channel_names = {}
     
     print(f"\nScanning NVR {nvr_ip} for available channels...")
     print(f"(This may take a moment, checking channels 1-{max_channel})")
+    
+    # Load existing channel mapping
+    existing_mapping = load_channel_mapping(nvr_ip)
     
     # Determine track ID base (101 for video, 103 for photo)
     if content_type == ContentType.VIDEO:
@@ -96,17 +168,35 @@ def get_available_channels(auth_handler, nvr_ip, utc_time_interval, content_type
                 
                 if len(tracks) > 0:
                     available_channels.append(channel_num)
-                    print(f"  ✓ Channel {channel_num:02d} has recordings")
+                    
+                    # Try to get channel name from existing mapping first
+                    channel_name = existing_mapping.get(str(channel_num))
+                    
+                    # If not in mapping, try to get from NVR
+                    if not channel_name:
+                        channel_name = get_channel_name_from_nvr(auth_handler, nvr_ip, channel_num)
+                    
+                    if channel_name:
+                        channel_names[str(channel_num)] = channel_name
+                        print(f"  ✓ Channel {channel_num:02d} ({channel_name}) has recordings")
+                    else:
+                        print(f"  ✓ Channel {channel_num:02d} has recordings")
             
         except Exception as e:
             # Channel likely doesn't exist or has no recordings
             pass
     
+    # Save updated channel mapping
+    if channel_names:
+        # Merge with existing mapping to preserve any manually added names
+        merged_mapping = {**existing_mapping, **channel_names}
+        save_channel_mapping(nvr_ip, merged_mapping)
+    
     print(f"\nFound {len(available_channels)} channel(s) with recordings: {available_channels}\n")
-    return available_channels
+    return available_channels, channel_names
 
 
-def download_channel_media(auth_handler, nvr_ip, channel_num, utc_time_interval, content_type):
+def download_channel_media(auth_handler, nvr_ip, channel_num, utc_time_interval, content_type, channel_name=None):
     """
     Download media from a specific channel.
     
@@ -116,11 +206,13 @@ def download_channel_media(auth_handler, nvr_ip, channel_num, utc_time_interval,
         channel_num: Channel number (1-32)
         utc_time_interval: Time interval to download
         content_type: Type of content (VIDEO or PHOTO)
+        channel_name: Optional channel name for display
     
     Returns:
         Number of files downloaded
     """
     logger = Logger.get_logger()
+    channel_display = f"Channel {channel_num:02d}" + (f" ({channel_name})" if channel_name else "")
     
     # Calculate track ID
     if content_type == ContentType.VIDEO:
@@ -128,7 +220,7 @@ def download_channel_media(auth_handler, nvr_ip, channel_num, utc_time_interval,
     else:
         track_id = (channel_num * 100) + 3
     
-    logger.info(f'Channel {channel_num:02d}: Getting track list...')
+    logger.info(f'{channel_display}: Getting track list...')
     
     # Get all tracks for this channel
     tracks = []
@@ -163,16 +255,16 @@ def download_channel_media(auth_handler, nvr_ip, channel_num, utc_time_interval,
                 break
                 
         except Exception as e:
-            logger.error(f'Channel {channel_num:02d}: Error getting tracks: {e}')
+            logger.error(f'{channel_display}: Error getting tracks: {e}')
             break
     
-    logger.info(f'Channel {channel_num:02d}: Found {len(tracks)} files')
+    logger.info(f'{channel_display}: Found {len(tracks)} files')
     
     # Download all tracks
     downloaded_count = 0
     for track in tracks:
         while True:
-            if download_file_with_retry(auth_handler, nvr_ip, channel_num, track, content_type):
+            if download_file_with_retry(auth_handler, nvr_ip, channel_num, track, content_type, channel_name):
                 downloaded_count += 1
                 break
             else:
@@ -185,24 +277,25 @@ def download_channel_media(auth_handler, nvr_ip, channel_num, utc_time_interval,
     return downloaded_count
 
 
-def download_file_with_retry(auth_handler, nvr_ip, channel_num, track, content_type):
+def download_file_with_retry(auth_handler, nvr_ip, channel_num, track, content_type, channel_name=None):
     """Download a single file with retry logic."""
     logger = Logger.get_logger()
+    channel_display = f"Channel {channel_num:02d}" + (f" ({channel_name})" if channel_name else "")
     
     start_time_text = track.get_time_interval().to_local_time().to_filename_text()
     sanitized_time_text = sanitize_filename(start_time_text)
-    file_name = get_path_to_video_archive(nvr_ip, channel_num) + sanitized_time_text + '.' + content_type
+    file_name = get_path_to_video_archive(nvr_ip, channel_num, channel_name) + sanitized_time_text + '.' + content_type
     url_to_download = track.url_to_download()
     
     # Validate the file path
     base_archive_path = os.path.abspath(path_to_media_archive)
     if not validate_path(file_name, base_archive_path):
-        logger.error(f'Channel {channel_num:02d}: Invalid file path detected: {file_name}')
+        logger.error(f'{channel_display}: Invalid file path detected: {file_name}')
         return False
     
     create_directory_for(file_name)
     
-    logger.info(f'Channel {channel_num:02d}: Downloading {os.path.basename(file_name)}')
+    logger.info(f'{channel_display}: Downloading {os.path.basename(file_name)}')
     
     status = CameraSdk.download_file(auth_handler, nvr_ip, url_to_download, file_name)
     
@@ -210,28 +303,32 @@ def download_file_with_retry(auth_handler, nvr_ip, channel_num, track, content_t
         return True
     else:
         if status.result_type == CameraSdk.FileDownloadingResult.TIMEOUT:
-            logger.error(f"Channel {channel_num:02d}: Timeout during file downloading")
+            logger.error(f"{channel_display}: Timeout during file downloading")
         elif status.result_type == CameraSdk.FileDownloadingResult.DEVICE_ERROR:
-            logger.error(f"Channel {channel_num:02d}: Device error - {status.text}")
+            logger.error(f"{channel_display}: Device error - {status.text}")
             # Note: We don't reboot for multi-channel downloads as it would affect all channels
         else:
-            logger.error(f"Channel {channel_num:02d}: {status.text}")
+            logger.error(f"{channel_display}: {status.text}")
         return False
 
 
-def download_from_channel_worker(auth_handler, nvr_ip, channel_num, utc_time_interval, content_type, results_queue):
+def download_from_channel_worker(auth_handler, nvr_ip, channel_num, utc_time_interval, content_type, channel_name, results_queue):
     """Worker function for downloading from a single channel in a thread."""
     try:
+        channel_display = f"Channel {channel_num:02d}" + (f" ({channel_name})" if channel_name else "")
+        
         # Initialize logger for this channel
-        log_file_name = base_path_to_log_file + f'{nvr_ip}_channel_{channel_num:02d}.log'
+        safe_name = sanitize_filename(channel_name) if channel_name else f'channel_{channel_num:02d}'
+        log_file_name = base_path_to_log_file + f'{nvr_ip}_{safe_name}.log'
         create_directory_for(log_file_name)
         
-        count = download_channel_media(auth_handler, nvr_ip, channel_num, utc_time_interval, content_type)
+        count = download_channel_media(auth_handler, nvr_ip, channel_num, utc_time_interval, content_type, channel_name)
         results_queue.put((channel_num, True, count, None))
-        print(f"✓ Channel {channel_num:02d}: Successfully downloaded {count} files")
+        print(f"✓ {channel_display}: Successfully downloaded {count} files")
     except Exception as e:
         results_queue.put((channel_num, False, 0, str(e)))
-        print(f"✗ Channel {channel_num:02d}: Failed - {e}")
+        channel_display = f"Channel {channel_num:02d}" + (f" ({channel_name})" if channel_name else "")
+        print(f"✗ {channel_display}: Failed - {e}")
 
 
 def download_from_all_channels(nvr_ip, start_datetime_str, end_datetime_str, use_utc_time, content_type, 
@@ -273,8 +370,10 @@ def download_from_all_channels(nvr_ip, start_datetime_str, end_datetime_str, use
         if specific_channels:
             channels = specific_channels
             print(f"\nDownloading from specified channels: {channels}")
+            # Get channel names for specified channels
+            channel_names = load_channel_mapping(nvr_ip)
         else:
-            channels = get_available_channels(auth_handler, nvr_ip, utc_time_interval, content_type, max_channel)
+            channels, channel_names = get_available_channels(auth_handler, nvr_ip, utc_time_interval, content_type, max_channel)
         
         if not channels:
             print("No channels found with recordings in the specified time range.")
@@ -292,9 +391,10 @@ def download_from_all_channels(nvr_ip, start_datetime_str, end_datetime_str, use
         
         # Create threads for all channels
         for channel_num in channels:
+            channel_name = channel_names.get(str(channel_num))
             thread = threading.Thread(
                 target=download_from_channel_worker,
-                args=(auth_handler, nvr_ip, channel_num, utc_time_interval, content_type, results_queue)
+                args=(auth_handler, nvr_ip, channel_num, utc_time_interval, content_type, channel_name, results_queue)
             )
             threads.append((channel_num, thread))
         
@@ -304,7 +404,9 @@ def download_from_all_channels(nvr_ip, start_datetime_str, end_datetime_str, use
             # Start new threads if under the limit
             while len(active_threads) < max_concurrent and thread_index < len(threads):
                 channel_num, thread = threads[thread_index]
-                print(f"Starting download from channel {channel_num:02d}...")
+                channel_name = channel_names.get(str(channel_num))
+                channel_display = f"channel {channel_num:02d}" + (f" ({channel_name})" if channel_name else "")
+                print(f"Starting download from {channel_display}...")
                 thread.start()
                 active_threads.append((channel_num, thread))
                 thread_index += 1
@@ -339,6 +441,9 @@ def print_summary(nvr_ip, results):
     print(f"DOWNLOAD SUMMARY FOR NVR: {nvr_ip}")
     print("="*70)
     
+    # Load channel names for display
+    channel_names = load_channel_mapping(nvr_ip)
+    
     successful = [ch for ch, result in results.items() if result['success']]
     failed = [ch for ch, result in results.items() if not result['success']]
     total_files = sum(result['count'] for result in results.values() if result['success'])
@@ -352,15 +457,29 @@ def print_summary(nvr_ip, results):
         print("\n✓ Successful channels:")
         for ch in sorted(successful):
             count = results[ch]['count']
-            print(f"  - Channel {ch:02d}: {count} files")
+            channel_name = channel_names.get(str(ch))
+            if channel_name:
+                print(f"  - Channel {ch:02d} ({channel_name}): {count} files")
+            else:
+                print(f"  - Channel {ch:02d}: {count} files")
     
     if failed:
         print("\n✗ Failed channels:")
         for ch in sorted(failed):
             error = results[ch]['error']
-            print(f"  - Channel {ch:02d}: {error}")
+            channel_name = channel_names.get(str(ch))
+            if channel_name:
+                print(f"  - Channel {ch:02d} ({channel_name}): {error}")
+            else:
+                print(f"  - Channel {ch:02d}: {error}")
     
     print("="*70 + "\n")
+    
+    # Print channel mapping info
+    mapping_file = path_to_media_archive + nvr_ip + '/' + CHANNEL_MAPPING_FILE
+    if os.path.exists(mapping_file):
+        print(f"Channel name mapping saved to: {mapping_file}")
+        print("You can edit this file to customize channel names.\n")
 
 
 def parse_channels(channels_str):
