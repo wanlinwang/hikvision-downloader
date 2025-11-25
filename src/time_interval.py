@@ -5,7 +5,7 @@ from datetime import timedelta
 class TimeInterval:
     __tz_format = '%Y-%m-%dT%H:%M:%SZ'
     __common_format = '%Y-%m-%d %H:%M:%S'
-    __filename_format = '%Y-%m-%d/%H_%M_%S'
+    __filename_format = '%Y-%m-%d_%H_%M_%S'  # Include date in filename to avoid conflicts
 
     def __init__(self, start_time, end_time, local_time_offset=timedelta()):
         self.local_time_offset = local_time_offset
