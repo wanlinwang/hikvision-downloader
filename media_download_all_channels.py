@@ -41,7 +41,70 @@ from src.track import Track
 MAX_CONCURRENT_DOWNLOADS = 3  # Maximum number of channels to download from simultaneously
 MAX_CHANNEL_TO_SCAN = 32  # Maximum channel number to scan (most NVRs have 4, 8, 16, or 32 channels)
 CHANNEL_MAPPING_FILE = 'channel_mapping.json'  # File to store channel name mappings
+
+# Datetime format used for user-provided input strings
+TIME_RANGE_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+# Acceptable file sizes (bytes) with tolerance for already-downloaded clips
+EXPECTED_FILE_SIZES_BYTES = [
+    (int(510 * 1024 * 1024), int(3 * 1024 * 1024)),   # ~510 MiB clips with ±3 MiB tolerance
+    (int(1024 * 1024 * 1024), int(3 * 1024 * 1024)),  # ~1 GiB clips with ±3 MiB tolerance
+]
 # ======================================
+
+
+def is_expected_file_size(file_size: int) -> bool:
+    """Return True if the file_size fits one of the expected size ranges."""
+    for expected, tolerance in EXPECTED_FILE_SIZES_BYTES:
+        if abs(file_size - expected) <= tolerance:
+            return True
+    return False
+
+
+def format_file_size(file_size: int) -> str:
+    """Format file size in MiB with two decimal places for logging."""
+    return f"{file_size / (1024 * 1024):.2f} MiB"
+
+
+def merge_channel_results(aggregate: dict, new_results: dict):
+    """Merge per-channel results into an aggregate dictionary."""
+    for channel, data in new_results.items():
+        if channel not in aggregate:
+            aggregate[channel] = {
+                'success': data.get('success', True),
+                'count': data.get('count', 0),
+                'error': data.get('error')
+            }
+        else:
+            aggregate[channel]['count'] += data.get('count', 0)
+            if not data.get('success', True):
+                aggregate[channel]['success'] = False
+                aggregate[channel]['error'] = data.get('error')
+
+
+def split_time_range_by_day(start_str: str, end_str: str):
+    """Split a time range into day-by-day intervals preserving original time format."""
+    start_dt = datetime.strptime(start_str, TIME_RANGE_FORMAT)
+    end_dt = datetime.strptime(end_str, TIME_RANGE_FORMAT)
+
+    if start_dt >= end_dt:
+        return []
+
+    intervals = []
+    current_start = start_dt
+
+    while current_start < end_dt:
+        next_day_start = (current_start + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        current_end = min(end_dt, next_day_start)
+        intervals.append(
+            (
+                current_start.strftime(TIME_RANGE_FORMAT),
+                current_end.strftime(TIME_RANGE_FORMAT)
+            )
+        )
+        current_start = current_end
+
+    return intervals
 
 
 def get_path_to_video_archive(nvr_ip: str, channel_num: int = None, channel_name: str = None):
@@ -289,6 +352,28 @@ def download_file_with_retry(auth_handler, nvr_ip, channel_num, track, content_t
     sanitized_time_text = sanitize_filename(start_time_text)
     file_name = get_path_to_video_archive(nvr_ip, channel_num, channel_name) + sanitized_time_text + '.' + content_type
     url_to_download = track.url_to_download()
+
+    # Skip already completed downloads, retry incomplete ones
+    if os.path.exists(file_name):
+        existing_size = os.path.getsize(file_name)
+        if is_expected_file_size(existing_size):
+            logger.info(
+                f'{channel_display}: Skip existing file {os.path.basename(file_name)} '
+                f'({format_file_size(existing_size)})'
+            )
+            return True
+        else:
+            logger.info(
+                f'{channel_display}: Existing file {os.path.basename(file_name)} '
+                f'({format_file_size(existing_size)}) looks incomplete, re-downloading'
+            )
+            try:
+                os.remove(file_name)
+            except OSError as remove_error:
+                logger.error(
+                    f"{channel_display}: Could not remove incomplete file {os.path.basename(file_name)}: {remove_error}"
+                )
+                return False
     
     # Validate the file path
     base_archive_path = os.path.abspath(path_to_media_archive)
@@ -600,20 +685,40 @@ def main():
             # Parse specific channels if provided
             specific_channels = parse_channels(parameters.channels) if parameters.channels else None
             
-            # Download from all channels
-            results = download_from_all_channels(
-                nvr_ip,
-                start_datetime_str,
-                end_datetime_str,
-                parameters.utc,
-                content_type,
-                parameters.concurrent,
-                parameters.max_channel,
-                specific_channels
-            )
-            
-            # Print summary
-            print_summary(nvr_ip, results)
+            # Split time range into day-by-day intervals
+            intervals = split_time_range_by_day(start_datetime_str, end_datetime_str)
+            if not intervals:
+                print("No time range to process. Please check start/end values.")
+                return
+
+            aggregate_results = {}
+            total_days = len(intervals)
+
+            for day_index, (range_start, range_end) in enumerate(intervals, 1):
+                print("\n" + "-" * 70)
+                print(f"Processing day {day_index}/{total_days}: {range_start} -> {range_end}")
+                print("-" * 70)
+
+                day_results = download_from_all_channels(
+                    nvr_ip,
+                    range_start,
+                    range_end,
+                    parameters.utc,
+                    content_type,
+                    parameters.concurrent,
+                    parameters.max_channel,
+                    specific_channels
+                )
+
+                if day_results:
+                    merge_channel_results(aggregate_results, day_results)
+                else:
+                    print("No channels processed during this interval.")
+
+            if aggregate_results:
+                print_summary(nvr_ip, aggregate_results)
+            else:
+                print("No data downloaded across the specified period.")
             
         except KeyboardInterrupt:
             print('\n\nDownload interrupted by user.')
