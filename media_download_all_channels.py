@@ -10,7 +10,7 @@ import sys
 import argparse
 import threading
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from queue import Queue
 
 # Import from the main script
@@ -282,7 +282,10 @@ def download_file_with_retry(auth_handler, nvr_ip, channel_num, track, content_t
     logger = Logger.get_logger()
     channel_display = f"Channel {channel_num:02d}" + (f" ({channel_name})" if channel_name else "")
     
-    start_time_text = track.get_time_interval().to_local_time().to_filename_text()
+    local_interval = track.get_time_interval().to_local_time()
+    start_time_display, _ = local_interval.to_text()
+    start_time_text = local_interval.to_filename_text()
+
     sanitized_time_text = sanitize_filename(start_time_text)
     file_name = get_path_to_video_archive(nvr_ip, channel_num, channel_name) + sanitized_time_text + '.' + content_type
     url_to_download = track.url_to_download()
@@ -295,7 +298,11 @@ def download_file_with_retry(auth_handler, nvr_ip, channel_num, track, content_t
     
     create_directory_for(file_name)
     
-    logger.info(f'{channel_display}: Downloading {os.path.basename(file_name)}')
+    current_time_display = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    logger.info(
+        f'{channel_display}: {current_time_display} start downloading {os.path.basename(file_name)} '
+        f'(track start {start_time_display})'
+    )
     
     status = CameraSdk.download_file(auth_handler, nvr_ip, url_to_download, file_name)
     
